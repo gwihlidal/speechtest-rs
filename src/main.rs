@@ -18,7 +18,8 @@ use std::io::Write;
 
 #[derive(Serialize,Deserialize)]
 struct InputConfig {
-    text: String,
+    text: Option<String>,
+    ssml: Option<String>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -121,7 +122,8 @@ fn main() {
 
     let data = SynthesizeRequest {
         input: InputConfig {
-            text: String::from(synthesize_input),
+            text: Some(String::from(synthesize_input)),
+            ssml: None,
         },
         voice: VoiceConfig {
             language_code: String::from(language), // https://cloud.google.com/speech/docs/languages
