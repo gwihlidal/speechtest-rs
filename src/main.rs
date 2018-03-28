@@ -27,6 +27,9 @@ struct VoiceConfig {
     language_code: String,
 
     name: String,
+
+    #[serde(rename = "ssmlGender")]
+    gender: String,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -86,6 +89,18 @@ fn main() {
                         .arg(Arg::with_name("play")
                             .long("play")
                             .help("Enable synthesized audio playback"))
+                        .arg(Arg::with_name("gender")
+                            .long("gender")
+                            .help("Specify synthesized voice gender")
+                            .takes_value(true))
+                        .arg(Arg::with_name("language")
+                            .long("language")
+                            .help("Specify synthesized voice language")
+                            .takes_value(true))
+                        .arg(Arg::with_name("name")
+                            .long("name")
+                            .help("Specify synthesized voice name")
+                            .takes_value(true))
                         .get_matches();
 
     let api_key = matches.value_of("key").unwrap();
@@ -95,6 +110,9 @@ fn main() {
 
     let pitch = value_t!(matches, "pitch", f32).unwrap_or(0.00);
     let speaking_rate = value_t!(matches, "rate", f32).unwrap_or(1.00);
+    let gender = matches.value_of("gender").unwrap_or("MALE");
+    let language = matches.value_of("language").unwrap_or("en-US");
+    let voice_name = matches.value_of("name").unwrap_or("en-US-Wavenet-D");
 
     let mut client = RestClient::new("https://texttospeech.googleapis.com").unwrap();
 
@@ -106,8 +124,9 @@ fn main() {
             text: String::from(synthesize_input),
         },
         voice: VoiceConfig {
-            language_code: String::from("en-US"), // https://cloud.google.com/speech/docs/languages
-            name: String::from("en-US-Wavenet-D"),
+            language_code: String::from(language), // https://cloud.google.com/speech/docs/languages
+            name: String::from(voice_name), // en-US-Wavenet-C (female)
+            gender: String::from(gender), // MALE, FEMALE, NEUTRAL
         },
         audio_config: AudioConfig {
             audio_encoding: String::from("LINEAR16"), // OGG_OPUS, LINEAR16, MP3
