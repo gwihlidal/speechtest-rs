@@ -27,6 +27,7 @@ struct VoiceConfig {
     #[serde(rename = "languageCode")]
     language_code: String,
 
+    #[serde(rename = "name")]
     name: String,
 
     #[serde(rename = "ssmlGender")]
@@ -38,22 +39,30 @@ struct AudioConfig {
     #[serde(rename = "audioEncoding")]
     audio_encoding: String,
 
+    #[serde(rename = "pitch")]
     pitch: f32,
 
     #[serde(rename = "speakingRate")]
     speaking_rate: f32,
+
+    #[serde(rename = "volumeGainDb")]
+    gain: f32,
 }
 
 #[derive(Serialize,Deserialize)]
 struct SynthesizeRequest {
+    #[serde(rename = "input")]
     input: InputConfig,
+
+    #[serde(rename = "voice")]
     voice: VoiceConfig,
+
     #[serde(rename = "audioConfig")]
     audio_config: AudioConfig,
 }
 
 #[derive(Deserialize)]
-struct HttpBinPostResp {
+struct SynthesizeResponse {
     #[serde(rename = "audioContent")]
     audio_content: String,
 }
@@ -68,23 +77,27 @@ impl RestPath<String> for SynthesizeRequest {
 fn main() {
 
     let matches = App::new("Cloud Text-to-Speech")
-                        .version("0.0.1")
+                        .version("0.1.0")
                         .author("Graham Wihlidal <graham@wihlidal.ca>")
                         .about("Google Cloud text-to-speech prototype")
                         .arg(Arg::with_name("pitch")
                             .long("pitch")
-                            .help("Sets the synthesize pitch")
+                            .help("Optional speaking pitch, in the range [-20.0, 20.0]. 20 means increase 20 semitones from the original pitch. -20 means decrease 20 semitones from the original pitch.")
                             .takes_value(true))
                         .arg(Arg::with_name("rate")
                             .long("rate")
-                            .help("Sets the synthesize speaking rate")
+                            .help("Optional speaking rate/speed, in the range [0.25, 4.0]. 1.0 is the normal native speed supported by the specific voice. 2.0 is twice as fast, and 0.5 is half as fast. If unset(0.0), defaults to the native 1.0 speed. Any other values < 0.25 or > 4.0 will return an error.")
+                            .takes_value(true))
+                        .arg(Arg::with_name("gain")
+                            .long("gain")
+                            .help("Optional volume gain (in dB) of the normal native volume supported by the specific voice, in the range [-96.0, 16.0]. If unset, or set to a value of 0.0 (dB), will play at normal native signal amplitude. A value of -6.0 (dB) will play at approximately half the amplitude of the normal native signal amplitude. A value of +6.0 (dB) will play at approximately twice the amplitude of the normal native signal amplitude. Strongly recommend not to exceed +10 (dB) as there's usually no effective increase in loudness for any value greater than that.")
                             .takes_value(true))
                         .arg(Arg::with_name("key")
                             .help("Sets cloud API key")
                             .required(true)
                             .index(1))
                         .arg(Arg::with_name("input")
-                            .help("Sets the input text to synthesize")
+                            .help("Sets the input to synthesize (raw text or ssml)")
                             .required(true)
                             .index(2))
                         .arg(Arg::with_name("play")
@@ -92,15 +105,15 @@ fn main() {
                             .help("Enable synthesized audio playback"))
                         .arg(Arg::with_name("gender")
                             .long("gender")
-                            .help("Specify synthesized voice gender")
+                            .help("Optional preferred voice gender (i.e. MALE, FEMALE, NEUTRAL). If not set, the service will choose a voice based on the other parameters such as language code and voice name. Note that this is only a preference, not a requirement; if a voice of the appropriate gender is not available, the synthesizer should substitute a voice with a different gender rather than failing the request.")
                             .takes_value(true))
                         .arg(Arg::with_name("language")
                             .long("language")
-                            .help("Specify synthesized voice language")
+                            .help("Optional voice language (i.e. en-US). The language (and optionally also the region) of the voice expressed as a BCP-47 language tag, e.g. en-US. This should not include a script tag (e.g. use 'cmn-cn' rather than 'cmn-Hant-cn'), because the script will be inferred from the input provided in the synthesis input. The TTS service will use this parameter to help choose an appropriate voice. Note that the TTS service may choose a voice with a slightly different language code than the one selected; it may substitute a different region (e.g. using en-US rather than en-CA if there isn't a Canadian voice available), or even a different language, e.g. using 'nb' (Norwegian Bokmal) instead of 'no' (Norwegian)")
                             .takes_value(true))
                         .arg(Arg::with_name("name")
                             .long("name")
-                            .help("Specify synthesized voice name")
+                            .help("Optional voice name (i.e. en-US-Wavenet-D). If not set, the service will choose a voice based on the other parameters such as language code and voice gender.")
                             .takes_value(true))
                         .get_matches();
 
@@ -110,6 +123,7 @@ fn main() {
     println!("Synthesizing input text: {}", synthesize_input);
 
     let pitch = value_t!(matches, "pitch", f32).unwrap_or(0.00);
+    let gain = value_t!(matches, "gain", f32).unwrap_or(0.00);
     let speaking_rate = value_t!(matches, "rate", f32).unwrap_or(1.00);
     let gender = matches.value_of("gender").unwrap_or("MALE");
     let language = matches.value_of("language").unwrap_or("en-US");
@@ -122,8 +136,8 @@ fn main() {
 
     let data = SynthesizeRequest {
         input: InputConfig {
-            text: Some(String::from(synthesize_input)),
-            ssml: None,
+            ssml: Some(String::from(synthesize_input)),
+            text: None,
         },
         voice: VoiceConfig {
             language_code: String::from(language), // https://cloud.google.com/speech/docs/languages
@@ -133,6 +147,7 @@ fn main() {
         audio_config: AudioConfig {
             audio_encoding: String::from("LINEAR16"), // OGG_OPUS, LINEAR16, MP3
             pitch: pitch,
+            gain: gain,
             speaking_rate: speaking_rate,
         },
     };
@@ -141,7 +156,7 @@ fn main() {
     // https://developers.google.com/web/updates/2014/01/Web-apps-that-talk-Introduction-to-the-Speech-Synthesis-API
     // https://cloud.google.com/speech/reference/rpc/google.cloud.speech.v1beta1
     // https://cloud.google.com/text-to-speech/docs/reference/rest/v1beta1/text/synthesize
-    let resp: Result<HttpBinPostResp, Error> = client.post_capture_with(String::from("text:synthesize"), &data, &params);
+    let resp: Result<SynthesizeResponse, Error> = client.post_capture_with(String::from("text:synthesize"), &data, &params);
     match resp {
         Err(err) => {
             println!("Failed processing request: {:?}", err);
