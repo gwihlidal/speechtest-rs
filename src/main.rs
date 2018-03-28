@@ -134,12 +134,12 @@ fn main() {
             let bytes = bytes_vec.as_slice();
 
             let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
-            let path = tmpfile.path().to_path_buf();
+            //let path = tmpfile.path().to_path_buf();
             tmpfile.write(bytes).unwrap();
 
             let persist_path = env::temp_dir().join("speech-test.wav");
             tmpfile.persist(&persist_path).unwrap();
-            println!("Persisted response data to: {:?}", path);
+            println!("Persisted response data to: {:?}", persist_path);
 
             if matches.is_present("play") {
                 println!("Playing synthesized audio");
