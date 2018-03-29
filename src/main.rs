@@ -8,11 +8,16 @@ extern crate tempfile;
 extern crate rodio;
 #[macro_use]
 extern crate clap;
+extern crate hound;
+extern crate cpal;
+
 
 use clap::{App, Arg};
 use restson::{RestClient,RestPath,Error};
 
 use std::env;
+use std::io;
+use std::io::prelude::*;
 use std::io::BufReader;
 use std::io::Write;
 
@@ -74,6 +79,33 @@ impl RestPath<String> for SynthesizeRequest {
     }
 }
 
+fn sample_format(format: cpal::SampleFormat) -> hound::SampleFormat {
+    match format {
+        cpal::SampleFormat::U16 => hound::SampleFormat::Int,
+        cpal::SampleFormat::I16 => hound::SampleFormat::Int,
+        cpal::SampleFormat::F32 => hound::SampleFormat::Float,
+    }
+}
+
+fn wav_spec_from_format(format: &cpal::Format) -> hound::WavSpec {
+    hound::WavSpec {
+        channels: format.channels as _,
+        sample_rate: format.sample_rate.0 as _,
+        bits_per_sample: (format.data_type.sample_size() * 8) as _,
+        sample_format: sample_format(format.data_type),
+    }
+}
+
+fn pause(message: &str) {
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    write!(stdout, "{}", message).unwrap();
+    stdout.flush().unwrap();
+
+    let _ = stdin.read(&mut [0u8]).unwrap();
+}
+
 fn main() {
 
     let matches = App::new("Cloud Text-to-Speech")
@@ -103,6 +135,9 @@ fn main() {
                         .arg(Arg::with_name("play")
                             .long("play")
                             .help("Enable synthesized audio playback"))
+                        .arg(Arg::with_name("record")
+                            .long("record")
+                            .help("Enable synthesized audio recording"))
                         .arg(Arg::with_name("gender")
                             .long("gender")
                             .help("Optional preferred voice gender (i.e. MALE, FEMALE, NEUTRAL). If not set, the service will choose a voice based on the other parameters such as language code and voice name. Note that this is only a preference, not a requirement; if a voice of the appropriate gender is not available, the synthesizer should substitute a voice with a different gender rather than failing the request.")
@@ -173,18 +208,94 @@ fn main() {
             //let path = tmpfile.path().to_path_buf();
             tmpfile.write(bytes).unwrap();
 
-            let persist_path = env::temp_dir().join("speech-test.wav");
-            tmpfile.persist(&persist_path).unwrap();
-            println!("Persisted response data to: {:?}", persist_path);
+            let play_path = env::temp_dir().join("speech-test.wav");
+            tmpfile.persist(&play_path).unwrap();
+            println!("Persisted response data to: {:?}", play_path);
+
+            let record_path = env::temp_dir().join("record-test.wav");
 
             if matches.is_present("play") {
                 println!("Playing synthesized audio");
+
                 let endpoint = rodio::default_endpoint().unwrap();
                 let mut sink = rodio::Sink::new(&endpoint);
-                let play_file = std::fs::File::open(persist_path).unwrap();
+                let play_file = std::fs::File::open(&play_path).unwrap();
                 sink.append(rodio::Decoder::new(BufReader::new(play_file)).unwrap());
                 sink.set_volume(1.0);
                 sink.sleep_until_end();
+            }
+
+            if matches.is_present("record") {
+                println!("Recording synthesized audio");
+
+                // Setup the default input device and stream with the default input format.
+                let device = cpal::default_input_device().expect("Failed to get default input device");
+                println!("Default input device: {}", device.name());
+                let format = device.default_input_format().expect("Failed to get default input format");
+                println!("Default input format: {:?}", format);
+
+                let event_loop = cpal::EventLoop::new();
+                let stream_id = event_loop.build_input_stream(&device, &format)
+                    .expect("Failed to build input stream");
+                event_loop.play_stream(stream_id);
+
+                let spec = wav_spec_from_format(&format);
+                let writer = hound::WavWriter::create(&record_path, spec).unwrap();
+                let writer = std::sync::Arc::new(std::sync::Mutex::new(Some(writer)));
+
+                pause("Press enter to start recording...");
+                let recording = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+                // Run the input stream on a separate thread.
+                let writer_2 = writer.clone();
+                let recording_2 = recording.clone();
+                std::thread::spawn(move || {
+                    event_loop.run(move |_, data| {
+                        // If we're done recording, return early.
+                        if !recording_2.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        // Otherwise write to the wav writer.
+                        match data {
+                            cpal::StreamData::Input { buffer: cpal::UnknownTypeInputBuffer::U16(buffer) } => {
+                                if let Ok(mut guard) = writer_2.try_lock() {
+                                    if let Some(writer) = guard.as_mut() {
+                                        for sample in buffer.iter() {
+                                            let sample = cpal::Sample::to_i16(sample);
+                                            writer.write_sample(sample).ok();
+                                        }
+                                    }
+                                }
+                            },
+                            cpal::StreamData::Input { buffer: cpal::UnknownTypeInputBuffer::I16(buffer) } => {
+                                if let Ok(mut guard) = writer_2.try_lock() {
+                                    if let Some(writer) = guard.as_mut() {
+                                        for &sample in buffer.iter() {
+                                            writer.write_sample(sample).ok();
+                                        }
+                                    }
+                                }
+                            },
+                            cpal::StreamData::Input { buffer: cpal::UnknownTypeInputBuffer::F32(buffer) } => {
+                                if let Ok(mut guard) = writer_2.try_lock() {
+                                    if let Some(writer) = guard.as_mut() {
+                                        for &sample in buffer.iter() {
+                                            writer.write_sample(sample).ok();
+                                        }
+                                    }
+                                }
+                            },
+                            _ => (),
+                        }
+                    });
+                });
+
+                pause("Press enter to finish recording...");
+                recording.store(false, std::sync::atomic::Ordering::Relaxed);
+                writer.lock().unwrap().take().unwrap().finalize().unwrap();
+                println!("Recording {:?} complete!", &record_path);
+
+
             }
         }
     }
